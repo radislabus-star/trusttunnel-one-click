@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+INSTALL_DIR="${TT_INSTALL_DIR:-/opt/trusttunnel}"
+SERVICE="trusttunnel.service"
+REPO_RAW="https://raw.githubusercontent.com/radislabus-star/trusttunnel-one-click/main"
+
+die() {
+  printf 'Error: %s\n' "$*" >&2
+  exit 1
+}
+
+need_root() {
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || die "run this command with sudo"
+}
+
+need_install() {
+  [[ -x "$INSTALL_DIR/trusttunnel_endpoint" ]] || die "TrustTunnel is not installed in $INSTALL_DIR"
+  [[ -f "$INSTALL_DIR/vpn.toml" ]] || die "missing $INSTALL_DIR/vpn.toml"
+  [[ -f "$INSTALL_DIR/hosts.toml" ]] || die "missing $INSTALL_DIR/hosts.toml"
+  [[ -f "$INSTALL_DIR/credentials.toml" ]] || die "missing $INSTALL_DIR/credentials.toml"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: sudo ttctl <command> [arguments]
+
+Commands:
+  status                    Show service and listening sockets
+  doctor                    Run local service, port, DNS, and TLS checks
+  logs                      Follow TrustTunnel logs
+  users                     List usernames (never passwords)
+  add-user USER [PASSWORD]  Add a user; generates a password when omitted
+  remove-user USER          Remove a user
+  link USER                 Print a tt:// client link
+  qr USER                   Print a client QR code in the terminal
+  restart                   Restart the endpoint
+  update                    Run the verified one-click updater
+EOF
+}
+
+config_value() {
+  local field="$1"
+  python3 - "$INSTALL_DIR" "$field" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+root = pathlib.Path(sys.argv[1])
+field = sys.argv[2]
+vpn = tomllib.loads((root / "vpn.toml").read_text())
+hosts = tomllib.loads((root / "hosts.toml").read_text())
+main = hosts.get("main_hosts", [])
+if not main:
+    raise SystemExit("hosts.toml has no main_hosts")
+host = main[0]["hostname"]
+listen = vpn["listen_address"]
+port = listen.rsplit(":", 1)[-1]
+values = {"host": host, "port": port, "address": host if port == "443" else f"{host}:{port}"}
+print(values[field])
+PY
+}
+
+list_users() {
+  python3 - "$INSTALL_DIR/credentials.toml" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
+for client in data.get("client", []):
+    print(client["username"])
+PY
+}
+
+validate_username() {
+  [[ "$1" =~ ^[A-Za-z0-9._@-]{1,64}$ ]] || die "username may contain only letters, digits, dot, underscore, @, and hyphen"
+}
+
+validate_password() {
+  [[ ${#1} -ge 16 && ${#1} -le 128 ]] || die "password must be 16-128 characters"
+  [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]] || die "password must be one line"
+}
+
+rewrite_user() {
+  local action="$1" username="$2" password="${3:-}"
+  TT_ACTION="$action" TT_USERNAME="$username" TT_PASSWORD="$password" \
+    python3 - "$INSTALL_DIR/credentials.toml" <<'PY'
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import tomllib
+
+path = pathlib.Path(sys.argv[1])
+data = tomllib.loads(path.read_text())
+clients = list(data.get("client", []))
+action = os.environ["TT_ACTION"]
+username = os.environ["TT_USERNAME"]
+password = os.environ.get("TT_PASSWORD", "")
+matches = [c for c in clients if c.get("username") == username]
+
+if action == "add":
+    if matches:
+        raise SystemExit(f"user already exists: {username}")
+    clients.append({"username": username, "password": password})
+elif action == "remove":
+    if not matches:
+        raise SystemExit(f"user does not exist: {username}")
+    clients = [c for c in clients if c.get("username") != username]
+    if not clients:
+        raise SystemExit("refusing to remove the last user")
+else:
+    raise SystemExit("unknown action")
+
+content = "".join(
+    "[[client]]\n"
+    f"username = {json.dumps(c['username'], ensure_ascii=False)}\n"
+    f"password = {json.dumps(c['password'], ensure_ascii=False)}\n\n"
+    for c in clients
+)
+fd, tmp_name = tempfile.mkstemp(prefix="credentials.", suffix=".toml", dir=path.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_name, path)
+finally:
+    try:
+        os.unlink(tmp_name)
+    except FileNotFoundError:
+        pass
+PY
+}
+
+client_link() {
+  local username="$1" address
+  list_users | grep -Fxq "$username" || die "unknown user: $username"
+  address="$(config_value address)"
+  (
+    cd "$INSTALL_DIR"
+    ./trusttunnel_endpoint vpn.toml hosts.toml \
+      -c "$username" -a "$address" --name "TrustTunnel VPN" --format deeplink
+  ) | sed -n '/^tt:\/\/?/ {p;q;}'
+}
+
+doctor() {
+  local host port cert_path tcp_ok=0 udp_ok=0
+  host="$(config_value host)"
+  port="$(config_value port)"
+  cert_path="$(python3 - "$INSTALL_DIR/hosts.toml" <<'PY'
+import pathlib
+import sys
+import tomllib
+data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
+print(data["main_hosts"][0]["cert_chain_path"])
+PY
+)"
+
+  printf '%-24s' 'Service'
+  if systemctl is-active --quiet "$SERVICE"; then
+    printf 'OK\n'
+  else
+    printf 'FAIL\n'
+    return 1
+  fi
+
+  ss -H -ltn "sport = :$port" | grep -q . && tcp_ok=1 || true
+  ss -H -lun "sport = :$port" | grep -q . && udp_ok=1 || true
+  printf '%-24s%s\n' "TCP $port" "$([[ $tcp_ok -eq 1 ]] && echo OK || echo FAIL)"
+  printf '%-24s%s\n' "UDP $port / HTTP3" "$([[ $udp_ok -eq 1 ]] && echo OK || echo FAIL)"
+
+  printf '%-24s' 'DNS'
+  getent ahosts "$host" >/dev/null && printf 'OK\n' || printf 'FAIL\n'
+
+  printf '%-24s' 'TLS certificate'
+  if openssl x509 -in "$cert_path" -checkend 604800 -noout >/dev/null 2>&1; then
+    printf 'OK (valid for more than 7 days)\n'
+  else
+    printf 'FAIL (missing or expiring within 7 days)\n'
+  fi
+
+  printf '%-24s' 'TLS handshake'
+  if timeout 8 openssl s_client -connect "127.0.0.1:$port" -servername "$host" -alpn h2 </dev/null 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then
+    printf 'OK\n'
+  else
+    printf 'FAIL\n'
+  fi
+
+  [[ $tcp_ok -eq 1 && $udp_ok -eq 1 ]]
+}
+
+main() {
+  local command="${1:-}"
+  case "$command" in
+    status)
+      need_install
+      systemctl --no-pager --full status "$SERVICE" || true
+      printf '\nListening sockets:\n'
+      ss -lntup | grep -E "trusttunnel|:$(config_value port)([[:space:]]|$)" || true
+      ;;
+    doctor)
+      need_install
+      doctor
+      ;;
+    logs)
+      need_install
+      exec journalctl -u "$SERVICE" -f
+      ;;
+    users)
+      need_install
+      list_users
+      ;;
+    add-user)
+      need_root
+      need_install
+      local username="${2:-}" password="${3:-}"
+      [[ -n "$username" ]] || die "usage: sudo ttctl add-user USER [PASSWORD]"
+      validate_username "$username"
+      if [[ -z "$password" ]]; then
+        password="$(openssl rand -hex 16)"
+      fi
+      validate_password "$password"
+      rewrite_user add "$username" "$password"
+      systemctl restart "$SERVICE"
+      printf 'User added: %s\nPassword: %s\n' "$username" "$password"
+      printf 'Client link:\n'
+      client_link "$username"
+      ;;
+    remove-user)
+      need_root
+      need_install
+      local username="${2:-}"
+      [[ -n "$username" ]] || die "usage: sudo ttctl remove-user USER"
+      validate_username "$username"
+      rewrite_user remove "$username"
+      systemctl restart "$SERVICE"
+      printf 'User removed: %s\n' "$username"
+      ;;
+    link)
+      need_install
+      [[ -n "${2:-}" ]] || die "usage: sudo ttctl link USER"
+      client_link "$2"
+      ;;
+    qr)
+      need_install
+      [[ -n "${2:-}" ]] || die "usage: sudo ttctl qr USER"
+      command -v qrencode >/dev/null || die "qrencode is not installed"
+      client_link "$2" | tr -d '\n' | qrencode -t ANSIUTF8
+      ;;
+    restart)
+      need_root
+      need_install
+      systemctl restart "$SERVICE"
+      doctor
+      ;;
+    update)
+      need_root
+      curl -fsSL "$REPO_RAW/install.sh" | TT_UPDATE_ONLY=1 bash
+      ;;
+    help|-h|--help|'')
+      usage
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
