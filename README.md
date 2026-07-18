@@ -10,7 +10,28 @@ official TrustTunnel release, verifies both binaries with the official AdGuard
 GPG signing key, configures TLS and systemd, and prints a ready-to-import
 `tt://` link and QR code.
 
-## One command
+## Connect a Linux computer to an existing VPN
+
+Ask the administrator for your private `tt://` link, then run on Ubuntu or Debian:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/radislabus-star/trusttunnel-one-click/main/install-client.sh | sudo bash
+```
+
+The installer requests the link using hidden input, verifies the official
+TrustTunnelClient GPG signatures, creates a root-only configuration, and
+installs an auto-starting systemd service. It does not auto-start from an SSH
+session and leaves autostart disabled, protecting remote access from an
+accidental route change.
+
+```bash
+sudo systemctl status trusttunnel-client
+sudo systemctl stop trusttunnel-client
+sudo systemctl start trusttunnel-client
+sudo journalctl -u trusttunnel-client -f
+```
+
+## Install your own VPN endpoint
 
 Point a DNS `A` record such as `vpn.example.com` to the VPS, allow inbound
 `22/tcp`, `80/tcp`, `443/tcp`, and `443/udp` in the provider firewall, then run:
