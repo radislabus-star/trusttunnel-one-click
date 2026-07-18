@@ -99,6 +99,8 @@ not silently affect other services.
 - Release binaries are accepted only after detached GPG signature verification
   against fingerprint `28645AC9776EC4C00BCE2AFC0FE641E7235E2EC6`, documented
   by the upstream project.
+- The `ttctl` helper is downloaded from an immutable versioned release asset
+  and accepted only when its SHA-256 matches the installer.
 - The generated password is not passed to the upstream setup wizard on its
   command line.
 - Credentials and backups are root-readable only.

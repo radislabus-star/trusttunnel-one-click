@@ -4,9 +4,9 @@ umask 077
 
 readonly INSTALL_DIR="${TT_INSTALL_DIR:-/opt/trusttunnel}"
 readonly SERVICE_FILE="/etc/systemd/system/trusttunnel.service"
-readonly RAW_BASE="https://raw.githubusercontent.com/radislabus-star/trusttunnel-one-click/main"
 readonly UPSTREAM_REPO="TrustTunnel/TrustTunnel"
 readonly SIGNING_FINGERPRINT="28645AC9776EC4C00BCE2AFC0FE641E7235E2EC6"
+readonly TTCTL_URL="https://github.com/radislabus-star/trusttunnel-one-click/releases/download/v1.0.0/ttctl"
 readonly TTCTL_SHA256="a7803acf4bc43ecbe5f105ccdb9015e1aa1011924a5f672a370daab26a49d782"
 
 DOMAIN="${TT_DOMAIN:-}"
@@ -183,7 +183,7 @@ install_ttctl() {
   if [[ -n "${TT_TTCTL_LOCAL_SOURCE:-}" ]]; then
     cp -- "$TT_TTCTL_LOCAL_SOURCE" "$source_file"
   else
-    curl --proto '=https' --tlsv1.2 -fsSL "$RAW_BASE/scripts/ttctl" -o "$source_file"
+    curl --proto '=https' --tlsv1.2 -fsSL "$TTCTL_URL" -o "$source_file"
   fi
   printf '%s  %s\n' "$TTCTL_SHA256" "$source_file" | sha256sum -c - >/dev/null
   install -m 0755 "$source_file" /usr/local/sbin/ttctl
