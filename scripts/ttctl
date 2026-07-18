@@ -168,8 +168,12 @@ PY
     return 1
   fi
 
-  ss -H -ltn "sport = :$port" | grep -q . && tcp_ok=1 || true
-  ss -H -lun "sport = :$port" | grep -q . && udp_ok=1 || true
+  if ss -H -ltn "sport = :$port" | grep -q .; then
+    tcp_ok=1
+  fi
+  if ss -H -lun "sport = :$port" | grep -q .; then
+    udp_ok=1
+  fi
   printf '%-24s%s\n' "TCP $port" "$([[ $tcp_ok -eq 1 ]] && echo OK || echo FAIL)"
   printf '%-24s%s\n' "UDP $port / HTTP3" "$([[ $udp_ok -eq 1 ]] && echo OK || echo FAIL)"
 

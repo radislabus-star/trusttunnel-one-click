@@ -7,7 +7,7 @@ readonly SERVICE_FILE="/etc/systemd/system/trusttunnel.service"
 readonly RAW_BASE="https://raw.githubusercontent.com/radislabus-star/trusttunnel-one-click/main"
 readonly UPSTREAM_REPO="TrustTunnel/TrustTunnel"
 readonly SIGNING_FINGERPRINT="28645AC9776EC4C00BCE2AFC0FE641E7235E2EC6"
-readonly TTCTL_SHA256="864da443bb32f20c3c63f74a0fbb902b184ce3bef53cb0eee0b2cbda301d5d8c"
+readonly TTCTL_SHA256="a7803acf4bc43ecbe5f105ccdb9015e1aa1011924a5f672a370daab26a49d782"
 
 DOMAIN="${TT_DOMAIN:-}"
 EMAIL="${TT_EMAIL:-}"
